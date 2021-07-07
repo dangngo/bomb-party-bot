@@ -43,7 +43,7 @@ impl EventHandler for Handler {
 }
 
 #[group]
-#[commands(new, join, target, timeout, start)]
+#[commands(new, join, target, timeout, dist, info, start)]
 struct BombParty;
 
 #[group]

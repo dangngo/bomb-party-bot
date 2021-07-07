@@ -20,7 +20,11 @@ use std::{
     u64,
 };
 
-use rand::{seq::SliceRandom, thread_rng};
+use rand::{
+    distributions::{Distribution, WeightedIndex},
+    seq::SliceRandom,
+    thread_rng,
+};
 use tokio::sync::Mutex;
 
 pub const DEFAULT_TARGET: u64 = 30;
@@ -41,6 +45,7 @@ lazy_static! {
     pub static ref QUADGRAMS: Vec<String> =
         lines_from_file("../res/quadgrams.txt").expect("Could not load quadgrams dictionary!");
     pub static ref QUADGRAMS_COUNT: usize = QUADGRAMS.len();
+    pub static ref DEFAULT_WEIGHTS: Vec<u64> = vec![15, 70, 15];
 }
 
 pub struct GameManager;
@@ -55,6 +60,7 @@ pub struct GameState {
     pub running: bool,
     pub target: u64,
     pub timeout: u64,
+    pub weights: Vec<u64>,
 }
 
 impl GameState {
@@ -64,6 +70,7 @@ impl GameState {
             running: false,
             target: DEFAULT_TARGET,
             timeout: DEFAULT_TIMEOUT,
+            weights: DEFAULT_WEIGHTS.to_vec(),
         }
     }
 }
@@ -101,12 +108,30 @@ pub enum Status {
     GameAlreadyRunning,
     TargetSet,
     TimeoutSet,
+    WeightSet,
+    InfoAcquired,
 }
 
-pub fn get_random_trigram() -> &'static String {
+enum Combination {
+    Bigrams,
+    Trigrams,
+    Quadgrams,
+}
+
+pub fn get_random_objective(weights: &Vec<u64>) -> &'static String {
     let mut rng = thread_rng();
-    let trigram = TRIGRAMS.choose(&mut rng).unwrap();
-    return trigram;
+    let choices = [
+        Combination::Bigrams,
+        Combination::Trigrams,
+        Combination::Quadgrams,
+    ];
+    let dist = WeightedIndex::new(weights).unwrap();
+    let combination = match choices[dist.sample(&mut rng)] {
+        Combination::Bigrams => BIGRAMS.choose(&mut rng).unwrap(),
+        Combination::Trigrams => TRIGRAMS.choose(&mut rng).unwrap(),
+        Combination::Quadgrams => QUADGRAMS.choose(&mut rng).unwrap(),
+    };
+    return combination;
 }
 
 pub async fn game_loop(
@@ -139,12 +164,12 @@ pub async fn game_loop(
             break;
         }
         for player in &mut game_state.players {
-            let trigram = get_random_trigram();
+            let objective = get_random_objective(&game_state.weights);
             let mut has_correct_answer = false;
             let message = format!(
-                "{}, it's your turn! Your random trigram is {}. You have {} seconds",
+                "{}, it's your turn! Write a word that contains {}. You have {} seconds",
                 player.id.mention(),
-                trigram,
+                objective,
                 game_state.timeout
             );
             let mut embed = CreateEmbed::default();
@@ -154,7 +179,7 @@ pub async fn game_loop(
                 "{}'s turn",
                 user.nick_in(&ctx, guild).await.unwrap_or_else(|| user.name)
             ));
-            embed.field("Objective", trigram, false);
+            embed.field("Objective", objective, false);
             embed.field("Health", player.health, true);
             embed.field("Points", player.points, true);
             embed.field("Target", game_state.target, true);
@@ -174,8 +199,8 @@ pub async fn game_loop(
 
             while let Some(ans) = collector.next().await {
                 let answer = ans.content.to_lowercase();
-                if answer.contains(&trigram.to_lowercase()) && WORDS.contains(&answer) {
-                    let points = ans.content.len() as u64 - 2;
+                if answer.contains(&objective.to_lowercase()) && WORDS.contains(&answer) {
+                    let points = (ans.content.len() - objective.len()) as u64 + 1;
                     channel
                         .say(&ctx.http, format!("Correct! You get {} point", points))
                         .await?;
@@ -219,4 +244,19 @@ pub async fn game_loop(
     };
     // Remove game entry
     Ok(())
+}
+
+pub fn create_config_embed(game: &GameState) -> CreateEmbed {
+    let options = ["Bigrams", "Trigrams", "Quadgrams"];
+    let mut dist = String::new();
+    for i in 0..options.len() {
+        dist.push_str(&format!("{}: {}\n", options[i], game.weights[i]));
+    }
+    let mut embed = CreateEmbed::default();
+    embed.author(|a| a.name("Bomb Party"));
+    embed.title("Game configuration");
+    embed.field("Distribution", dist, true);
+    embed.field("Target", game.target, true);
+    embed.field("Health", DEFAULT_HEALTH, true);
+    return embed;
 }

@@ -1,6 +1,7 @@
 use crate::bomb_party::*;
 
 use serenity::{
+    builder::CreateEmbed,
     framework::standard::{macros::command, Args, CommandResult},
     model::prelude::*,
     prelude::*,
@@ -36,7 +37,7 @@ pub async fn new(ctx: &Context, msg: &Message) -> CommandResult {
     match status {
         Status::NewGameCreated => {
             msg.channel_id
-               .say(&ctx.http, "A new game has been created! Use `timeout`, `target` to config this game or `join` to join the game. Start the game with `start` when you're ready! There's no going back! Seriously")
+               .say(&ctx.http, "A new game has been created!\nUse `timeout`, `target`, `dist` to config this game or `join` to join the game.\nUse `help` for more info.\nStart the game with `start` when you're ready! There's no going back!")
                .await?;
         }
         Status::GameAlreadyStarted => {
@@ -185,6 +186,95 @@ pub async fn timeout(ctx: &Context, msg: &Message, mut args: Args) -> CommandRes
         Status::TimeoutSet => {
             msg.channel_id
                 .say(&ctx.http, format!("Timeout has been set to {}!", timeout))
+                .await?;
+        }
+        Status::NoGameCreated => {
+            msg.channel_id
+                .say(
+                    &ctx.http,
+                    "No game is going on in this channel! Use `new` to create a new game",
+                )
+                .await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[command]
+#[description = "Set the weights for the distribution of objectives. Order is: Bigrams Trigrams Quadgrams"]
+pub async fn dist(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
+    let bigrams: u64 = args.single::<u64>()?;
+    let trigrams: u64 = args.single::<u64>()?;
+    let quadgrams: u64 = args.single::<u64>()?;
+
+    let weights = vec![bigrams, trigrams, quadgrams];
+    let key = format!("{}_{}", msg.guild_id.unwrap(), msg.channel_id);
+
+    let manager_lock = {
+        let data_read = ctx.data.read().await;
+        data_read
+            .get::<GameManager>()
+            .expect("Expected BombPartyManager in TypeMap")
+            .clone()
+    };
+
+    let status = {
+        let mut manager = manager_lock.lock().await;
+        match manager.entry(key) {
+            Entry::Occupied(mut o) => {
+                let mut game_state = o.get_mut();
+                game_state.weights = weights;
+                Status::WeightSet
+            }
+            Entry::Vacant(_) => Status::NoGameCreated,
+        }
+    };
+    match status {
+        Status::WeightSet => {
+            msg.channel_id
+                .say(&ctx.http, "Weights has been set!")
+                .await?;
+        }
+        Status::NoGameCreated => {
+            msg.channel_id
+                .say(
+                    &ctx.http,
+                    "No game is going on in this channel! Use `new` to create a new game",
+                )
+                .await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+#[command]
+#[description = "Get current game configuration"]
+pub async fn info(ctx: &Context, msg: &Message) -> CommandResult {
+    let key = format!("{}_{}", msg.guild_id.unwrap(), msg.channel_id);
+
+    let manager_lock = {
+        let data_read = ctx.data.read().await;
+        data_read
+            .get::<GameManager>()
+            .expect("Expected BombPartyManager in TypeMap")
+            .clone()
+    };
+
+    let (status, embed) = {
+        let mut manager = manager_lock.lock().await;
+        match manager.entry(key) {
+            Entry::Occupied(o) => {
+                let game_state = o.get();
+                (Status::InfoAcquired, create_config_embed(&game_state))
+            }
+            Entry::Vacant(_) => (Status::NoGameCreated, CreateEmbed::default()),
+        }
+    };
+    match status {
+        Status::InfoAcquired => {
+            msg.channel_id
+                .send_message(&ctx.http, |m| m.set_embed(embed))
                 .await?;
         }
         Status::NoGameCreated => {
